@@ -10,7 +10,21 @@ class IntervalSet:
     def to_set(self):
         return np.hstack([np.arange(a, b + 1) for a, b in self.edges])
 
-    def __isub__(self, edge):
+    def contains(self, edge):
+        """Determines if self - edge == self."""
+        lo, hi = edge
+
+        if hi - lo <= 1:
+            return True
+
+        def no_change(start, end):
+            if end <= lo or hi <= start:
+                return True
+
+        return all(no_change(*edge) for edge in self.edges)
+
+    def __sub__(self, edge):
+        edges = [x for x in self.edges]
         lo, hi = edge
         for i, (start, end) in enumerate(self.edges):
             if end < lo or hi < start:
@@ -22,25 +36,23 @@ class IntervalSet:
 
             if lo_in_range and hi_in_range:
                 # interval to remove entirely contained
-                self.edges = (
-                    self.edges[:i] + [(start, lo), (hi, end)] + self.edges[i + 1:]
-                )
-                return self
+                edges = edges[:i] + [(start, lo), (hi, end)] + edges[i + 1 :]
+                return IntervalSet(edges)
             elif lo_in_range and not hi_in_range:
                 # start - lo - end - hi
                 # replace [start, end] with [start, lo] and then sub [end, hi]
-                self.edges[i] = (start, lo)
+                edges[i] = (start, lo)
             elif not lo_in_range and hi_in_range:
                 # lo - start - hi - end
                 # same as above
-                self.edges[i] = (hi, end)
+                edges[i] = (hi, end)
             else:
                 # we already dealt with no overlap, so this must be containment
                 # we can completely replace
-                self.edges[i] = (lo, hi)
-                return self
+                edges[i] = (lo, hi)
+                return IntervalSet(edges)
 
-        return self
+        return IntervalSet(edges)
 
 
 class Arc:
@@ -54,10 +66,8 @@ class Arc:
         self.cost = 0
         self.cutoff = 0
         self.processed = False
+        self.ceiling = []
         self.l2 = []
-
-    def __eq__(self, other):
-        return (self.v1, self.v2) == (other.v1, other.v2)
 
     def __lt__(self, other):
         return (-self.cutoff, self.v1, self.v2) < (-other.cutoff, other.v1, other.v2)
@@ -76,7 +86,7 @@ def frac(num, denom):
 
 
 def flatten_verts(arcs):
-    """Takes in a list of arcs and returns a list of vertices 
+    """Takes in a list of arcs and returns a list of vertices
     (v1, v2, v1, v2), etc."""
     ans = []
     for arc in arcs:
@@ -161,7 +171,7 @@ def optimal_matrix_chain_cost(dims):
         iset = IntervalSet([hull])
 
         for i in range(0, len(edges), 2):
-            iset -= edges[i:i + 2]
+            iset -= edges[i : i + 2]
 
         total = 0
 
@@ -177,7 +187,22 @@ def optimal_matrix_chain_cost(dims):
         result = total + hull_weight
         return result
 
-    frontier = []
+    def compute_ceiling(node, arcs, exclude=()):
+        """Computes the ceiling, or covering set, of arcs above node."""
+        iset = IntervalSet([(node.v1, node.v2)])
+        ceiling = []
+        for edge in sorted(arcs):
+            if (
+                not iset.contains((edge.v1, edge.v2)) 
+                and edge not in ceiling
+                and edge not in exclude
+            ):
+                iset -= (edge.v1, edge.v2)
+                ceiling.append(edge)
+
+        return ceiling
+
+    frontier = set()
     for leaf in leaves:
         leaf.cost = 0
         leaf.cutoff = 0
@@ -191,7 +216,7 @@ def optimal_matrix_chain_cost(dims):
         )
         leaf.l2 = [leaf]
         leaf.processed = True
-        frontier.append(leaf.parent)
+        frontier.add(leaf.parent)
 
     while frontier:
         node = frontier.pop()
@@ -202,79 +227,22 @@ def optimal_matrix_chain_cost(dims):
 
         vmin, _vmax = sorted((node.v1, node.v2), key=lambda i: dims[i])
 
-        if len(node.children) == 1:
-            # unimodal algorithm
-            child = node.children[0]
-            v1 = node.v1 if node.v2 in (child.v1, child.v2) else node.v2
+        l2prime = []
+        for child in node.children:
+            l2prime += [x for x in child.l2]
 
-            l2prime = [x for x in child.l2]
-            while l2prime and l2prime[0].cutoff >= dims[vmin]:
-                heapq.heappop(l2prime)
+        l2prime.sort()
 
-            ceiling = []
-            for edge in sorted(l2prime):
-                old_rang = fan_cost(
-                    node.v1, node.v2, *sum([[e.v1, e.v2] for e in ceiling], start=[])
-                )
-                new_rang = fan_cost(
-                    node.v1,
-                    node.v2,
-                    edge.v1,
-                    edge.v2,
-                    *sum([[e.v1, e.v2] for e in ceiling], start=[]),
-                )
-                if old_rang != new_rang and edge not in ceiling:
-                    ceiling.append(edge)
+        while l2prime and l2prime[0].cutoff >= dims[vmin]:
+            heapq.heappop(l2prime)
 
-            if node.cost == 0:
-                # cost of SP(r_j) plus a fan with SP(r_i-1;r_j) centered at v1
-                node.cost = sum([x.cost for x in ceiling]) + dims[vmin] * fan_cost(
-                    node.v1,
-                    node.v2,
-                    *sum([[x.v1, x.v2] for x in ceiling], start=[]),
-                    exclude=(vmin,),
-                )
+        ceiling = compute_ceiling(node, l2prime)
 
-        elif len(node.children) == 2:
-            # have to merge lists
-            child1, child2 = (
-                node.children
-                if vmin in (node.children[0].v1, node.children[0].v2)
-                else node.children[::-1]
+        if node.cost == 0:
+            # T(r1), T(r2_i), and fan of r0 under r1 and r2_i centered at vmin
+            node.cost = sum([x.cost for x in ceiling]) + dims[vmin] * fan_cost(
+                node.v1, node.v2, *flatten_verts(ceiling), exclude=(vmin,),
             )
-
-            l2prime = [x for x in child2.l2]
-            while l2prime and l2prime[0].cutoff >= dims[vmin]:
-                heapq.heappop(l2prime)
-
-            ceiling = []
-            for edge in sorted(l2prime + [x for x in child1.l2]):
-                old_rang = fan_cost(
-                    node.v1, node.v2, *sum([[e.v1, e.v2] for e in ceiling], start=[])
-                )
-                new_rang = fan_cost(
-                    node.v1,
-                    node.v2,
-                    edge.v1,
-                    edge.v2,
-                    *sum([[e.v1, e.v2] for e in ceiling], start=[]),
-                )
-                if old_rang != new_rang and edge not in ceiling:
-                    ceiling.append(edge)
-
-            if node.cost == 0:
-                # T(r1), T(r2_i), and fan of r0 under r1 and r2_i centered at vmin
-                node.cost = sum([x.cost for x in ceiling]) + dims[vmin] * fan_cost(
-                    node.v1,
-                    node.v2,
-                    *sum([[x.v1, x.v2] for x in ceiling], start=[]),
-                    exclude=(vmin,),
-                )
-
-            for x in child1.l2:
-                heapq.heappush(l2prime, x)
-        else:
-            raise ValueError("Impossible: node has neither 1 nor two children!")
 
         def c1(w_v):
             return node.cost + w_v * dims[node.v1] * dims[node.v2]
@@ -282,20 +250,7 @@ def optimal_matrix_chain_cost(dims):
         # print(node, [float(x.cutoff) for x in l2prime])
         node.l2 = [x for x in l2prime]
 
-        ceiling = []
-        for edge in sorted(l2prime):
-            old_rang = fan_cost(
-                node.v1, node.v2, *sum([[e.v1, e.v2] for e in ceiling], start=[])
-            )
-            new_rang = fan_cost(
-                node.v1,
-                node.v2,
-                edge.v1,
-                edge.v2,
-                *sum([[e.v1, e.v2] for e in ceiling], start=[]),
-            )
-            if old_rang != new_rang and edge not in ceiling:
-                ceiling.append(edge)
+        ceiling = compute_ceiling(node, l2prime)
 
         node.cutoff = dims[vmin]
         prev_fan_w = None
@@ -314,9 +269,7 @@ def optimal_matrix_chain_cost(dims):
             prev_ceiling_cost = ceiling_cost
             ceiling_cost = sum([x.cost for x in ceiling])
             prev_fan_w = fan_w
-            fan_w = fan_cost(
-                node.v1, node.v2, *sum([[x.v1, x.v2] for x in ceiling], start=[])
-            )
+            fan_w = fan_cost(node.v1, node.v2, *flatten_verts(ceiling))
             c2 = ceiling_cost + cutoff * fan_w
 
             ceilings.append([x for x in ceiling])
@@ -333,31 +286,11 @@ def optimal_matrix_chain_cost(dims):
                 prev_cutoff = cutoff
                 cutoff = lowest.cutoff
                 # remove lowest edge
-                ceiling = ceiling[:lowest_i] + ceiling[lowest_i + 1:]
+                ceiling = ceiling[:lowest_i] + ceiling[lowest_i + 1 :]
                 if len(lowest.children) == 0:
                     continue
 
-                new_edges = []
-                for edge in sorted(lowest.l2[1:]):
-                    old_rang = fan_cost(
-                        node.v1,
-                        node.v2,
-                        *sum([[e.v1, e.v2] for e in new_edges], start=[]),
-                    )
-                    new_rang = fan_cost(
-                        node.v1,
-                        node.v2,
-                        edge.v1,
-                        edge.v2,
-                        *sum([[e.v1, e.v2] for e in new_edges], start=[]),
-                    )
-                    if (
-                        old_rang != new_rang
-                        and edge not in new_edges
-                        and edge not in ceiling
-                    ):
-                        new_edges.append(edge)
-
+                new_edges = compute_ceiling(node, lowest.l2[1:], exclude=ceiling)
                 ceiling += new_edges
         if len(ceiling) == 0 and c2 > c1(cutoff):
             # optimal cutoff has no other h-arcs
@@ -384,7 +317,8 @@ def optimal_matrix_chain_cost(dims):
 
         heapq.heappush(node.l2, node)
         node.processed = True
-        if node.parent is not None and node.parent not in frontier:
-            frontier.append(node.parent)
+        if node.parent is not None:
+            frontier.add(node.parent)
 
+    
     return node.cost - dims[0] ** 2 * min(dims[1:-1])

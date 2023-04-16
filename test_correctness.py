@@ -53,7 +53,7 @@ def test_single_case():
 
 @pytest.mark.parametrize(
     "seed,n_test,n_dim,lo,hi",
-    [(0, 100, 8, 100, 150), (1, 100, 16, 10, 30), (2, 50, 32, 10, 30)],
+    [(10, 100, 8, 100, 150), (11, 100, 16, 10, 30), (12, 100, 32, 10, 30)],
 )
 def test_random(seed, n_test, n_dim, lo, hi):
     rng = np.random.Generator(np.random.PCG64(seed=seed))
