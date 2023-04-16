@@ -3,7 +3,7 @@ import numpy as np
 from scalene import scalene_profiler
 
 rng = np.random.default_rng(seed=123)
-tests = rng.integers(10, 1000, size=(10, 10_000))
+tests = rng.integers(10, 1000, size=(5, 100_000))
 
 scalene_profiler.start()
 for test in tests:

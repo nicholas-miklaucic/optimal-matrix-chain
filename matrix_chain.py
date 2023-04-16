@@ -1,6 +1,7 @@
 import numpy as np
 import heapq
 import functools
+from math import floor, ceil
 
 
 class IntervalSet:
@@ -55,6 +56,20 @@ class IntervalSet:
         return IntervalSet(edges)
 
 
+class RangeMinQuery:
+    def __init__(self, arr):
+        self.arr = [(x, i) for i, x in enumerate(arr)]
+        self.block_size = ceil(np.log2(len(arr)) / 4)
+        self.blocks = [min(self.arr[i:i+self.block_size]) for i in range(0, len(self.arr), self.block_size)]
+
+    def min_range(self, i, j):
+        mid_block = self.blocks[ceil(i / self.block_size) : floor(j / self.block_size)]
+        start_block = self.arr[i:min(j + 1, ceil(i / self.block_size) * self.block_size)]
+        end_block = self.arr[max(i, floor(j / self.block_size) * self.block_size):j+1]         
+                
+        return min(start_block + mid_block + end_block)[1]
+
+
 class Arc:
     """A potential h-arc."""
 
@@ -70,7 +85,8 @@ class Arc:
         self.l2 = []
 
     def __lt__(self, other):
-        return (-self.cutoff, self.v1, self.v2) < (-other.cutoff, other.v1, other.v2)
+        return -self.cutoff < -other.cutoff
+        # return (-self.cutoff, self.v1, self.v2) < (-other.cutoff, other.v1, other.v2)
 
 
 def frac(num, denom):
@@ -116,22 +132,23 @@ def optimal_matrix_chain_cost(dims):
     arcs = []
     leaves = []
 
+    rmq = RangeMinQuery(dims)
+
     def make_arc(edge):
         """
         Initializes Arcs starting at the given edge, adding it to leaves
         if it's a leaf.
         """
-        i1, i2 = edge
-        P = np.arange(i1 + 1, i2)
-        if len(P) == 0:
+        i1, i2 = edge        
+        if i2 - i1 <= 1:
             # leaf node
             children = []
-        elif len(P) == 1:
+        elif i2 - i1 == 2:
             # degenerate leaf node
-            leaf = sorted((max((i1, i2), key=lambda x: dims[x]), P[0]))
+            leaf = sorted((max((i1, i2), key=lambda x: dims[x]), i1 + 1))
             children = [make_arc(leaf)]
         else:
-            k = min(P, key=lambda i: dims[i])
+            k = rmq.min_range(i1 + 1, i2 - 1)
             children = []
             for e in ((i1, k), (k, i2)):
                 if e[1] - e[0] > 1:
@@ -225,7 +242,7 @@ def optimal_matrix_chain_cost(dims):
             # process those first
             continue
 
-        vmin, _vmax = sorted((node.v1, node.v2), key=lambda i: dims[i])
+        vmin = node.v1 if dims[node.v1] <= dims[node.v2] else node.v2        
 
         l2prime = []
         for child in node.children:
