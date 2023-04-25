@@ -1,8 +1,19 @@
 """Testing for the optimal matrix chain ordering."""
 
 import numpy as np
-from matrix_chain import optimal_matrix_chain_cost
+from matrix_chain import multi_dot, optimal_matrix_chain_cost
 import pytest
+
+class DotCostTracker:
+    def __init__(self):
+        self.cost = 0
+
+    def dot(self, a, b):
+        a1, a2 = a.shape
+        b1, b2 = b.shape
+        assert a2 == b1
+        self.cost += a1 * a2 * b2
+        return np.dot(a, b)
 
 
 def dp_matrix_cost(p):
@@ -48,7 +59,7 @@ def test_single_case():
     dims = rng.choice(np.arange(500, 1500), size=500, replace=False)
     answer = 241357185845
 
-    assert optimal_matrix_chain_cost(dims) == answer
+    assert optimal_matrix_chain_cost(dims)[1] == answer
 
 
 @pytest.mark.parametrize(
@@ -59,7 +70,11 @@ def test_random(seed, n_test, n_dim, lo, hi):
     rng = np.random.Generator(np.random.PCG64(seed=seed))
     for _i in range(n_test):
         dims = rng.integers(lo, hi, size=n_dim)
-        assert optimal_matrix_chain_cost(dims) == dp_matrix_cost(dims)
+        # assert optimal_matrix_chain_cost(dims)[1] == dp_matrix_cost(dims)
+        mats = [rng.standard_normal((dims[i], dims[i+1])) for i in range(len(dims) - 1)]
+        tracer = DotCostTracker()
+        assert np.allclose(multi_dot(mats, tracer.dot), np.linalg.multi_dot(mats))
+        assert tracer.cost == dp_matrix_cost(dims)
 
 
 @pytest.mark.slow
@@ -67,4 +82,4 @@ def test_random_200():
     rng = np.random.default_rng(seed=1234)
     for _i in range(1000):
         dims = rng.uniform(0.1, 10, size=200).astype(np.double)
-        assert optimal_matrix_chain_cost(dims) == pytest.approx(dp_matrix_cost(dims))
+        assert optimal_matrix_chain_cost(dims)[1] == pytest.approx(dp_matrix_cost(dims))

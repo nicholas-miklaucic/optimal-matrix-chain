@@ -80,8 +80,7 @@ class Arc:
         self.children = children
         self.cost = 0
         self.cutoff = 0
-        self.processed = False
-        self.ceiling = []
+        self.processed = False        
         self.l2 = []
 
     def __lt__(self, other):
@@ -111,24 +110,24 @@ def flatten_verts(arcs):
     return ans
 
 
-def optimal_matrix_chain_cost(dims):
-    """Finds the optimal cost for multiplying matrices with the
-    dimensions given by dims."""
+def postorder_traversal(f, leaves):
+    """Computes f(root), where f depends on the children.
+    Uses iteration to avoid stack overflow."""
+    processed = set()
+    frontier = set(leaves)
+    while frontier:
+        node = frontier.pop()
+        if set(node.children).issubset(processed):
+            result = f(node)
+            processed.add(node)
 
-    # It makes things easier if a single horizontal arc is the root of the
-    # entire arc tree. We can transform any problem into one of this kind as
-    # follows:
-    # 1. Roll the array so the minimum value is at the front. This doesn't
-    #    change the answer (once we unroll at the end), because the polygon
-    #    remains unchanged.
-    # 2. Add a new vertex equal to that minimum at the very end. This
-    # introduces a single additional triangle which we can remove at the
-    # end. Now (0, n - 1) is a horizontal arc that spans the entire polygon.
+            if node.parent is not None:
+                frontier.add(node.parent)
 
-    offset = np.argmin(dims)
-    dims = np.roll(dims, -offset, axis=0)
-    dims = np.hstack([dims, dims[0]])
+    return result
 
+def optimal_cost_root_harc(dims):
+    """Assumes dims[0], dims[-1] are two smallest elements."""
     arcs = []
     leaves = []
 
@@ -217,125 +216,254 @@ def optimal_matrix_chain_cost(dims):
                 iset -= (edge.v1, edge.v2)
                 ceiling.append(edge)
 
-        return ceiling
+        return ceiling    
 
-    frontier = set()
-    for leaf in leaves:
-        leaf.cost = 0
-        leaf.cutoff = 0
-        am1, a = sorted((leaf.v1, leaf.v2), key=lambda i: dims[i])
-        ap1 = min([leaf.parent.v1, leaf.parent.v2], key=lambda i: dims[i])
+    def compute_cutoff(node):
+        if len(node.children) == 0:
+            leaf = node
+            leaf.cost = 0
+            leaf.cutoff = 0
+            am1, a = sorted((leaf.v1, leaf.v2), key=lambda i: dims[i])
+            ap1 = min([leaf.parent.v1, leaf.parent.v2], key=lambda i: dims[i])
 
-        leaf.parent.cost = dims[am1] * dims[ap1] * dims[a]
-        leaf.parent.cutoff = frac(
-            dims[am1] * dims[a] * dims[ap1],
-            dims[a] * (dims[am1] + dims[ap1]) - dims[am1] * dims[ap1],
-        )
-        leaf.l2 = [leaf]
-        leaf.processed = True
-        frontier.add(leaf.parent)
-
-    while frontier:
-        node = frontier.pop()
-        # print(node)
-        if any([not child.processed for child in node.children]):
-            # process those first
-            continue
-
-        vmin = node.v1 if dims[node.v1] <= dims[node.v2] else node.v2        
-
-        l2prime = []
-        for child in node.children:
-            l2prime += [x for x in child.l2]
-
-        l2prime.sort()
-
-        while l2prime and l2prime[0].cutoff >= dims[vmin]:
-            heapq.heappop(l2prime)
-
-        ceiling = compute_ceiling(node, l2prime)
-
-        if node.cost == 0:
-            # T(r1), T(r2_i), and fan of r0 under r1 and r2_i centered at vmin
-            node.cost = sum([x.cost for x in ceiling]) + dims[vmin] * fan_cost(
-                node.v1, node.v2, *flatten_verts(ceiling), exclude=(vmin,),
+            leaf.parent.cost = dims[am1] * dims[ap1] * dims[a]
+            leaf.parent.cutoff = frac(
+                dims[am1] * dims[a] * dims[ap1],
+                dims[a] * (dims[am1] + dims[ap1]) - dims[am1] * dims[ap1],
             )
-
-        def c1(w_v):
-            return node.cost + w_v * dims[node.v1] * dims[node.v2]
-
-        # print(node, [float(x.cutoff) for x in l2prime])
-        node.l2 = [x for x in l2prime]
-
-        ceiling = compute_ceiling(node, l2prime)
-
-        node.cutoff = dims[vmin]
-        prev_fan_w = None
-        fan_w = None
-        prev_ceiling_cost = None
-        ceiling_cost = None
-        prev_cutoff = None
-        cutoff = dims[vmin]
-        ceilings = []
-        diffs = []
-        cutoffs = []
-
-        while len(ceiling) >= 0:
-            # cost of a fan bounded by the ceiling
-
-            prev_ceiling_cost = ceiling_cost
-            ceiling_cost = sum([x.cost for x in ceiling])
-            prev_fan_w = fan_w
-            fan_w = fan_cost(node.v1, node.v2, *flatten_verts(ceiling))
-            c2 = ceiling_cost + cutoff * fan_w
-
-            ceilings.append([x for x in ceiling])
-            diffs.append((c2, c1(cutoff)))
-            cutoffs.append(cutoff)
-            if c2 <= c1(cutoff):
-                break
-            else:
-                if len(ceiling) == 0:
-                    break
-                lowest_i = max(range(len(ceiling)), key=lambda i: ceiling[i].cutoff)
-                lowest = ceiling[lowest_i]
-                # print(ceiling, lowest)
-                prev_cutoff = cutoff
-                cutoff = lowest.cutoff
-                # remove lowest edge
-                ceiling = ceiling[:lowest_i] + ceiling[lowest_i + 1 :]
-                if len(lowest.children) == 0:
-                    continue
-
-                new_edges = compute_ceiling(node, lowest.l2[1:], exclude=ceiling)
-                ceiling += new_edges
-        if len(ceiling) == 0 and c2 > c1(cutoff):
-            # optimal cutoff has no other h-arcs
-            node.cutoff = frac(
-                node.cost, fan_cost(node.v1, node.v2) - dims[node.v1] * dims[node.v2]
-            )
-        elif prev_fan_w is None:
-            # this cutoff is higher than all previous
-            node.cutoff = frac(
-                node.cost - ceiling_cost, fan_w - dims[node.v1] * dims[node.v2]
-            )
+            leaf.l2 = [leaf]
+            leaf.processed = True            
         else:
-            # correct answer is between current ceiing and previous
-            node.cutoff = frac(
-                node.cost - prev_ceiling_cost,
-                prev_fan_w - dims[node.v1] * dims[node.v2],
-            )
-            assert cutoff <= node.cutoff <= prev_cutoff
+            vmin = node.v1 if dims[node.v1] <= dims[node.v2] else node.v2        
 
-        assert node.cutoff <= dims[vmin]
+            l2prime = []
+            for child in node.children:
+                l2prime += [x for x in child.l2]
 
-        while node.l2 and node.l2[0].cutoff >= node.cutoff:
-            heapq.heappop(node.l2)
+            l2prime.sort()
 
-        heapq.heappush(node.l2, node)
-        node.processed = True
-        if node.parent is not None:
-            frontier.add(node.parent)
+            while l2prime and l2prime[0].cutoff >= dims[vmin]:
+                heapq.heappop(l2prime)
 
+            ceiling = compute_ceiling(node, l2prime)
+
+            if node.cost == 0:
+                # T(r1), T(r2_i), and fan of r0 under r1 and r2_i centered at vmin
+                node.cost = sum([x.cost for x in ceiling]) + dims[vmin] * fan_cost(
+                    node.v1, node.v2, *flatten_verts(ceiling), exclude=(vmin,),
+                )
+
+            def c1(w_v):
+                return node.cost + w_v * dims[node.v1] * dims[node.v2]
+
+            # print(node, [float(x.cutoff) for x in l2prime])
+            node.l2 = [x for x in l2prime]        
+
+            node.cutoff = dims[vmin]
+            prev_fan_w = None
+            fan_w = None
+            ceiling_cost = None
+            cutoff = dims[vmin]
+            ceilings = []
+            diffs = []
+            cutoffs = []
+
+            while len(ceiling) >= 0:
+                # cost of a fan bounded by the ceiling
+
+                prev_ceiling_cost = ceiling_cost
+                ceiling_cost = sum([x.cost for x in ceiling])
+                prev_fan_w = fan_w
+                fan_w = fan_cost(node.v1, node.v2, *flatten_verts(ceiling))
+                c2 = ceiling_cost + cutoff * fan_w
+
+                ceilings.append([x for x in ceiling])
+                diffs.append((c2, c1(cutoff)))
+                cutoffs.append(cutoff)
+                if c2 <= c1(cutoff):
+                    break
+                else:
+                    if len(ceiling) == 0:
+                        break
+                    lowest_i = max(range(len(ceiling)), key=lambda i: ceiling[i].cutoff)
+                    lowest = ceiling[lowest_i]
+                    # print(ceiling, lowest)
+                    prev_cutoff = cutoff
+                    cutoff = lowest.cutoff
+                    # remove lowest edge
+                    ceiling = ceiling[:lowest_i] + ceiling[lowest_i + 1 :]
+                    if len(lowest.children) == 0:
+                        continue
+
+                    new_edges = compute_ceiling(node, lowest.l2[1:], exclude=ceiling)
+                    ceiling += new_edges
+            if len(ceiling) == 0 and c2 > c1(cutoff):
+                # optimal cutoff has no other h-arcs
+                node.cutoff = frac(
+                    node.cost, fan_cost(node.v1, node.v2) - dims[node.v1] * dims[node.v2]
+                )
+            elif prev_fan_w is None:
+                # this cutoff is higher than all previous
+                node.cutoff = frac(
+                    node.cost - ceiling_cost, fan_w - dims[node.v1] * dims[node.v2]
+                )
+            else:
+                # correct answer is between current ceiing and previous
+                node.cutoff = frac(
+                    node.cost - prev_ceiling_cost,
+                    prev_fan_w - dims[node.v1] * dims[node.v2],
+                )
+                assert cutoff <= node.cutoff <= prev_cutoff
+
+            assert node.cutoff <= dims[vmin]
+
+            while node.l2 and node.l2[0].cutoff >= node.cutoff:
+                heapq.heappop(node.l2)
+
+            heapq.heappush(node.l2, node)            
+
+        return node
+
+    root = postorder_traversal(compute_cutoff, leaves)
+    return (root, root.cost, arcs, leaves)
+
+
+def optimal_matrix_chain_cost(dims):
+    """Finds the optimal order and cost for multiplying matrices with the
+    dimensions given by dims."""
+
+    # It makes things easier if a single horizontal arc is the root of the
+    # entire arc tree. We can transform any problem into one of this kind as
+    # follows:
+    # 1. Roll the array so the minimum value is at the front. This doesn't
+    #    change the answer (once we unroll at the end), because the polygon
+    #    remains unchanged.
+    # 2. Add a new vertex equal to that minimum at the very end. This
+    # introduces a single additional triangle which we can remove at the
+    # end. Now (0, n - 1) is a horizontal arc that spans the entire polygon.
+
+    offset = np.argmin(dims)
+    dims = np.roll(dims, -offset, axis=0)
+    dims = np.hstack([dims, dims[0]])
+
+    root, root_cost, arcs, leaves = optimal_cost_root_harc(dims)
+    cost = root.cost - dims[0] ** 2 * min(dims[1:-1])
+    return (root, cost, arcs, leaves)
+
+
+def multi_dot(mats, dot=np.dot):
+    dims = [mat.shape[0] for mat in mats]
+    dims.append(mats[-1].shape[1])
+
+
+    offset = np.argmin(dims)
+    dims2 = np.roll(dims, -offset, axis=0)
+    dims2 = np.hstack([dims2, dims2[0]])
+
+    root, cost, arcs, leaves = optimal_matrix_chain_cost(dims)
+    def find_ceiling(node):
+        if len(node.children) == 0:
+            node.ceiling = set()
+            node.matrix_product = None
+        else:
+            vmin = node.v1 if dims2[node.v1] <= dims2[node.v2] else node.v2
+            wmin = dims2[vmin]
+            frontier = set(node.children)
+            node.ceiling = set()
+            jumps = {}
+            rjumps = {}
+
+            while frontier:
+                child = frontier.pop()
+                if child.cutoff <= wmin:
+                    node.ceiling.add(child)
+                else:
+                    frontier.update(child.ceiling)
+
+        return node.ceiling
     
-    return node.cost - dims[0] ** 2 * min(dims[1:-1])
+    ceiling = postorder_traversal(find_ceiling, leaves)
+    def triangulate(node):
+        if node.v2 - node.v1 == 1:
+            node.triangulation = set()
+            return node.triangulation
+        elif node.v2 - node.v1 == 2:
+            v3 = node.v1 + 1
+            node.triangulation = {(node.v1, node.v2, v3)}
+            return node.triangulation
+        
+        jumps = {}
+        rjumps = {}
+        for e in node.ceiling:
+            jumps[e.v1] = (e, e.v2)
+            rjumps[e.v2] = (e, e.v1)
+        
+        node.triangulation = []
+        if dims2[node.v1] <= dims2[node.v2]:                
+            vstart = node.v1
+            vend = node.v2
+            incr = 1
+            edge_dict = jumps
+        else:        
+            vstart = node.v2  
+            vend = node.v1
+            incr = -1        
+            edge_dict = rjumps
+
+        curr_edges = set()
+        curr = vstart        
+        while curr != vend:            
+            if curr in edge_dict:
+                (edge, dest) = edge_dict[curr]         
+                curr_edges.update(edge.triangulation)
+                curr_edges.add(tuple(sorted((vstart, curr, dest))))
+                curr = dest
+            else:
+                curr_edges.add(tuple(sorted((curr, curr + incr, vstart))))
+                curr = curr + incr
+
+        node.triangulation = curr_edges
+        return node.triangulation
+    import itertools
+    from collections import defaultdict
+
+    m = postorder_traversal(triangulate, leaves)
+    triangles = []    
+    for edge in m:    
+        relabeled = [(v + offset) % len(dims) for v in edge]    
+        v1, v2, v3 = relabeled
+        print(relabeled)
+        if len(set(relabeled)) == 3:        
+            triangles.append(tuple(sorted(relabeled)))
+    edges = []
+    for (v1, v2, v3) in triangles:
+        edges += [(v1, v2), (v1, v3), (v2, v3)]
+    graph = defaultdict(set)
+    for (v1, v2) in edges:
+        graph[v1].add(v2)
+        graph[v2].add(v1)
+
+    tris = set()
+    for v, neighbors in graph.items():
+        for i, j in itertools.combinations(neighbors, 2):
+            if j in graph[i]:
+                tris.add(tuple(sorted((v, i, j))))
+
+    products = {}
+    for (v1, v2, v3) in triangles:
+        for va, vb in ((v1, v2), (v2, v3)):
+            if vb - va == 1:
+                products[(va, vb)] = mats[va]
+
+
+    while triangles:
+        new_triangles = []
+        for (v1, v2, v3) in triangles:
+            if (v1, v2) in products and (v2, v3) in products:                
+                products[(v1, v3)] = dot(products[(v1, v2)], products[(v2, v3)])
+            else:
+                new_triangles.append((v1, v2, v3))
+        
+        triangles = new_triangles
+
+    return products[(0, len(dims) - 1)]
